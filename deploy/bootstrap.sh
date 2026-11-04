@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run as root on the VM by deploy.sh before every deploy (ssh … 'sudo bash -s' < deploy/bootstrap.sh). It does what
+# Run as root on the VM by deploy/ship.sh before every deploy (ssh … 'sudo bash -s' < deploy/bootstrap.sh). It does what
 # cloud-init does at first boot, again, and safely: on Oracle's VMs DNS is sometimes not up yet when cloud-init runs, so
 # its package install can fail once and never retry. Changes nothing when everything is in place.
 
@@ -35,6 +35,16 @@ for port in 443 80; do
 done
 # Saved every time, so the rules survive a reboot even when first boot couldn't save them.
 netfilter-persistent save >/dev/null 2>&1 || true
+
+# SSH by key only. Ubuntu's cloud images already say so; this keeps it true when port 22 is open to GitHub Actions.
+sshd_conf=/etc/ssh/sshd_config.d/10-grid-maker.conf
+sshd_want="PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no"
+if [ "$(cat "$sshd_conf" 2>/dev/null)" != "$sshd_want" ]; then
+  printf '%s\n' "$sshd_want" > "$sshd_conf"
+  if sshd -t; then systemctl try-reload-or-restart ssh; else rm -f "$sshd_conf"; echo "sshd rejected $sshd_conf; removed it" >&2; fi
+fi
 
 # Swap, for builds on small VMs.
 if ! swapon --show | grep -q /swapfile; then

@@ -1,0 +1,75 @@
+# Tests every push and pull request. A push to main (or a manual run on main) then deploys to the Oracle VM with
+# deploy/ship.sh and waits until the new revision is live.
+#
+# Set up once from your computer, after a first ./deploy.sh: ./deploy.sh ci
+# It adds the DEPLOY_SSH_KEY secret and the DEPLOY_HOST, DEPLOY_KNOWN_HOSTS, SERVICE_ORIGIN and AGENT_ID variables.
+# Provisioning (Terraform), the Stellar registration and the production settings stay with ./deploy.sh.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    name: Deploy
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    # One deploy at a time; a newer push waits for the running one instead of cutting it off.
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load the deploy key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          SERVICE_ORIGIN: ${{ vars.SERVICE_ORIGIN }}
+          AGENT_ID: ${{ vars.AGENT_ID }}
+        run: |
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST SERVICE_ORIGIN AGENT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set. Run ./deploy.sh ci once on your computer."
+              exit 1
+            fi
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Ship to the VM
+        env:
+          SSH_STRICT: "yes"
+          ORIGIN: ${{ vars.SERVICE_ORIGIN }}
+          AGENT_ID: ${{ vars.AGENT_ID }}
+        run: |
+          SSH_KEY="$HOME/.ssh/deploy_key" SSH_KNOWN_HOSTS="$HOME/.ssh/known_hosts" REVISION="${GITHUB_SHA::12}" \
+            deploy/ship.sh "${{ vars.DEPLOY_HOST }}"
+          echo "Live: ${{ vars.SERVICE_ORIGIN }} (revision ${GITHUB_SHA::12})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

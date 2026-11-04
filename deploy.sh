@@ -7,6 +7,7 @@
 #   ./deploy.sh logs         follow the service's logs on the VM
 #   ./deploy.sh ssh          a shell on the VM
 #   ./deploy.sh destroy      delete the VM and its network (the registration on chain stays)
+#   ./deploy.sh ci           once: let GitHub Actions deploy every push to main (.github/workflows/ci-cd.yml)
 #
 # Safe to run again: Terraform changes only what differs, `provider-kit launch` signs nothing once the registration is
 # in place, and the app is rebuilt from your current code. No Stellar secret key is used or stored anywhere: the one-time
@@ -18,6 +19,7 @@ cd "$(dirname "$0")"
 TF=deploy/terraform
 SECRETS=deploy/.secrets
 KEY="$SECRETS/id_ed25519"
+CI_KEY="$SECRETS/github_actions_ed25519"
 OCI_CONFIG="${OCI_CONFIG_FILE:-$HOME/.oci/config}"
 PROFILE="${OCI_PROFILE:-DEFAULT}"
 REMOTE=/opt/grid-maker/app
@@ -52,7 +54,67 @@ export_tf_vars() {
   export TF_VAR_tenancy_ocid TF_VAR_region TF_VAR_oci_profile TF_VAR_ssh_public_key
 }
 
+# A value from terraform.tfvars, which beats the TF_VAR_ values this script exports; and setting one there.
+tfvar_get() { sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"(.*)\".*/\1/p" "$TF/terraform.tfvars" 2>/dev/null | tail -1; }
+tfvar_set() {
+  local file="$TF/terraform.tfvars"
+  touch "$file"
+  { grep -vE "^[[:space:]]*$1[[:space:]]*=" "$file" || true; printf '%s = "%s"\n' "$1" "$2"; } > "$file.tmp"
+  mv "$file.tmp" "$file"
+}
+
+# The git commit being deployed, as the service reports it at / (GitHub Actions uses the same 12 characters).
+revision() {
+  local rev
+  rev="$(git rev-parse --short=12 HEAD 2>/dev/null || echo local)"
+  [ -z "$(git status --porcelain 2>/dev/null)" ] || rev="$rev-dirty"
+  echo "$rev"
+}
+
+# GitHub Actions' access: its own key on the VM, and what the workflow needs as repository settings. Only the key is
+# a secret; the VM's address, host key, origin and agent id are public anyway.
+sync_ci() {
+  local repo ip known
+  repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+  ip="$(tf_out public_ip)"
+  ssh_vm 'k="$(cat)"; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF "$k" ~/.ssh/authorized_keys || printf "%s\n" "$k" >> ~/.ssh/authorized_keys' < "$CI_KEY.pub"
+  known="$(ssh-keygen -F "$ip" -f "$SECRETS/known_hosts" | grep -v '^#')"
+  [ -n "$known" ] || die "No host key for $ip in $SECRETS/known_hosts."
+  gh secret set DEPLOY_SSH_KEY --repo "$repo" < "$CI_KEY"
+  gh variable set DEPLOY_HOST --repo "$repo" --body "$ip"
+  gh variable set DEPLOY_KNOWN_HOSTS --repo "$repo" --body "$known"
+  gh variable set SERVICE_ORIGIN --repo "$repo" --body "$(tf_out origin)"
+  gh variable set AGENT_ID --repo "$repo" --body "$(envget AGENT_ID)"
+  ok "GitHub Actions in $repo deploys to $ip"
+}
+
+setup_ci() {
+  command -v gh >/dev/null || die "Install the GitHub CLI (https://cli.github.com), then: gh auth login"
+  gh auth status >/dev/null 2>&1 || die "The GitHub CLI isn't logged in: gh auth login (an invalid GH_TOKEN in your shell causes this too)."
+  gh repo view --json nameWithOwner >/dev/null 2>&1 || die "This folder has no GitHub repository yet: create it and push first."
+  [ -n "$(tf_out public_ip)" ] && [ -n "$(envget AGENT_ID)" ] || die "Deploy once with ./deploy.sh first."
+  ssh_vm true || die "Can't reach the VM over SSH from here."
+
+  bold "Making SSH key-only on the VM"
+  ssh_vm "sudo bash -s" < deploy/bootstrap.sh
+
+  bold "Opening SSH to GitHub's runners"
+  # Their addresses change all the time, so port 22 opens to all; the VM accepts keys only.
+  tfvar_set ssh_cidr "0.0.0.0/0"
+  export_tf_vars
+  tf init -input=false >/dev/null
+  tf apply -input=false -auto-approve -target=oci_core_security_list.public
+  ok "port 22 open, key-only"
+
+  bold "Giving GitHub Actions its own deploy key"
+  [ -f "$CI_KEY" ] || ssh-keygen -q -t ed25519 -N "" -C "instagram-grid-maker-github-actions" -f "$CI_KEY"
+  sync_ci
+  printf '\n\033[1mDone.\033[0m Every push to main now tests and deploys. Watch it with: gh run watch\n'
+}
+
 case "${1:-}" in
+  ci)
+    setup_ci; exit ;;
   status)
     exec npx provider-kit status --url "$(tf_out origin)" ;;
   logs)
@@ -65,7 +127,7 @@ case "${1:-}" in
     echo "The VM is gone. The Stellar 8004 registration still names its old address: ./deploy.sh again re-registers a new one."
     exit ;;
   -*|"") ;;
-  *) die "Unknown command: $1. Use ./deploy.sh [status|logs|ssh|destroy|--no-open]." ;;
+  *) die "Unknown command: $1. Use ./deploy.sh [status|logs|ssh|destroy|ci|--no-open]." ;;
 esac
 
 # ── 1. Preflight ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -85,8 +147,13 @@ fi
 mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -C "instagram-grid-maker-deploy" -f "$KEY"
 export_tf_vars
-MY_IP="$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
-if [[ "$MY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then export TF_VAR_ssh_cidr="$MY_IP/32"; fi
+# SSH from this computer only, unless terraform.tfvars says otherwise (./deploy.sh ci opens it to GitHub's runners).
+if [ -n "$(tfvar_get ssh_cidr)" ]; then
+  TF_VAR_ssh_cidr="$(tfvar_get ssh_cidr)"
+else
+  MY_IP="$(curl -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$MY_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then export TF_VAR_ssh_cidr="$MY_IP/32"; fi
+fi
 ok "network $NETWORK, Oracle region $TF_VAR_region, SSH from ${TF_VAR_ssh_cidr:-anywhere}"
 
 # ── 2. Infrastructure ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -145,15 +212,10 @@ done
 ssh_vm "test -f /opt/grid-maker/.cloud-init-done" || die "The VM is not ready after 10 minutes: ./deploy.sh ssh, then: sudo cloud-init status --long"
 ok "ready"
 
-bold "Making sure the VM has Docker and its firewall rules"
-ssh_vm "sudo bash -s" < deploy/bootstrap.sh
-
-bold "Copying the project and starting it"
-rsync -az --delete -e "ssh -i $KEY -o UserKnownHostsFile=$SECRETS/known_hosts -o BatchMode=yes" \
-  --exclude node_modules --exclude dist --exclude .env --exclude '.env.*' --exclude 'jobs.sqlite*' --exclude outputs \
-  --exclude .git --exclude deploy/.secrets --exclude deploy/terraform --exclude deploy/app.env --exclude deploy/site.env \
-  ./ "ubuntu@$IP:$REMOTE/"
+bold "Writing the production settings to the VM"
+ssh_vm "sudo mkdir -p $REMOTE/deploy && sudo chown -R ubuntu:ubuntu /opt/grid-maker"
 # Settings for the container: production values only. The facilitator key stays in this file, readable by ubuntu only.
+# GitHub Actions deploys keep using it as it is: change a setting here, then run ./deploy.sh again.
 {
   echo "STELLAR_NETWORK=$NETWORK"
   echo "PUBLIC_ORIGIN=$ORIGIN"
@@ -166,19 +228,20 @@ rsync -az --delete -e "ssh -i $KEY -o UserKnownHostsFile=$SECRETS/known_hosts -o
   true
 } | ssh_vm "umask 077 && cat > $REMOTE/deploy/app.env"
 echo "SITE_ADDRESS=$(tf_out hostname)" | ssh_vm "cat > $REMOTE/deploy/site.env"
-ssh_vm "cd $REMOTE/deploy && sudo docker compose up -d --build --remove-orphans && sudo docker image prune -f >/dev/null"
-ok "containers started"
+ok "written"
+
+# Copies the code, builds, restarts, and waits until the new revision answers over HTTPS: the same as GitHub Actions.
+SSH_KEY="$KEY" SSH_KNOWN_HOSTS="$SECRETS/known_hosts" ORIGIN="$ORIGIN" AGENT_ID="$AGENT_ID" REVISION="$(revision)" \
+  deploy/ship.sh "$IP" || die "The new version didn't come up. ./deploy.sh logs shows why."
 
 # ── 5. Check from outside ───────────────────────────────────────────────────────────────────────────────────────────
-bold "Waiting for $ORIGIN to answer over HTTPS"
-MANIFEST="$ORIGIN/.well-known/stellar-agent-services.json"
-live=""
-for _ in $(seq 1 40); do
-  if curl -fsS --max-time 10 "$MANIFEST" 2>/dev/null | grep -Eq "\"agentId\": *$AGENT_ID([^0-9]|\$)"; then live=yes; break; fi
-  sleep 6
-done
-[ -n "$live" ] || die "$MANIFEST does not serve agent $AGENT_ID yet. ./deploy.sh logs shows why."
-ok "live: $MANIFEST"
+# A replaced VM has a new address: keep GitHub Actions pointed at it.
+if [ -f "$CI_KEY" ]; then
+  bold "Updating GitHub Actions' deploy settings"
+  if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then sync_ci; else
+    echo "  gh isn't logged in; if the VM's address changed, run ./deploy.sh ci."
+  fi
+fi
 
 bold "Status"
 npx provider-kit status --url "$ORIGIN" || true

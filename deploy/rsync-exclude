@@ -1,0 +1,14 @@
+# What ./deploy.sh and GitHub Actions don't copy to the VM (deploy/ship.sh). Excluded files already on the VM are kept,
+# so the VM's own app.env and site.env survive every deploy.
+/node_modules/
+/dist/
+/.env
+/.env.*
+jobs.sqlite*
+/outputs/
+/.git/
+/.github/
+/deploy/.secrets/
+/deploy/terraform/
+/deploy/app.env
+/deploy/site.env

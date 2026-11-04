@@ -74,6 +74,51 @@ approval link where your wallet is.
 | `./deploy.sh logs` | Follow the service's logs on the VM |
 | `./deploy.sh ssh` | A shell on the VM |
 | `./deploy.sh destroy` | Delete the VM and network. The on-chain registration stays; a new deploy re-registers the new address. |
+| `./deploy.sh ci` | Once: let GitHub Actions deploy every push to `main` (below) |
+
+### CI/CD: deploy on every push to `main`
+
+`.github/workflows/ci-cd.yml` runs the tests on every push and pull request. When `main` passes them, it ships that
+commit to the VM with `deploy/ship.sh` (the same step `./deploy.sh` uses) and waits until `https://<ip>.sslip.io/`
+reports the new `revision`. You can also run it by hand from the Actions tab, on `main`.
+
+Set it up once, after a first `./deploy.sh`, with the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`)
+and the repository pushed:
+
+```bash
+./deploy.sh ci
+```
+
+That does four things:
+
+1. It makes SSH on the VM key-only.
+2. It opens port 22 to GitHub's runners. Their addresses keep changing, so the port opens to everyone, and the
+   `ssh_cidr` setting is saved in `terraform.tfvars`.
+3. It gives GitHub Actions its own deploy key.
+4. It stores the repository settings below.
+
+| Name | Kind | What |
+| --- | --- | --- |
+| `DEPLOY_SSH_KEY` | secret | GitHub Actions' private key for the VM (`deploy/.secrets/github_actions_ed25519`) |
+| `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS` | variables | The VM's IP and its SSH host key |
+| `SERVICE_ORIGIN`, `AGENT_ID` | variables | What the live check expects |
+
+GitHub never gets the facilitator key, the Terraform state or your wallet. The workflow only ships code. These stay
+with `./deploy.sh`:
+
+- the VM itself (Terraform);
+- the Stellar registration;
+- the production settings in the VM's `deploy/app.env`.
+
+Change any of these with `./deploy.sh` on your computer. If the VM is replaced, `./deploy.sh` updates GitHub's
+settings when `gh` is logged in. Otherwise, run `./deploy.sh ci` again.
+
+To revoke GitHub Actions' access:
+
+1. Delete the `github-actions` line from `~/.ssh/authorized_keys` on the VM (`./deploy.sh ssh`).
+2. Run `gh secret delete DEPLOY_SSH_KEY`.
+3. To close SSH back down to your own IP, remove `ssh_cidr` from `deploy/terraform/terraform.tfvars` and run
+   `./deploy.sh`.
 
 ### Cost
 
@@ -144,7 +189,8 @@ npx provider-kit try make-grid '{"imageUrl":"https://picsum.photos/id/1015/3200/
 - **Image URLs are fetched safely**: HTTPS on port 443 only, public IP addresses only (checked on the address actually
   connected to, so the VM's metadata service and private network are unreachable), 3 redirects, 25 MB and 15 s at most.
 - Inputs aren't kept. Output files sit under unguessable links, and are deleted about 25 hours after the job.
-- `deploy/.secrets/` (the deploy SSH key), Terraform state and `.env` are kept out of git.
+- `deploy/.secrets/` (the deploy SSH keys), Terraform state and `.env` are kept out of git. SSH on the VM takes keys
+  only.
 
 ## Files
 
@@ -158,6 +204,8 @@ npx provider-kit try make-grid '{"imageUrl":"https://picsum.photos/id/1015/3200/
 | `src/outputs.ts` | Output files: save, serve, expire |
 | `src/grid.test.ts` | Offline tests |
 | `deploy.sh` | The one command |
+| `deploy/ship.sh`, `deploy/rsync-exclude` | Copy, build, restart and check: used by `deploy.sh` and GitHub Actions |
+| `.github/workflows/ci-cd.yml` | Tests every push; deploys `main` |
 | `deploy/terraform/` | Oracle Cloud VM, network, firewall, first-boot setup |
 | `deploy/docker-compose.yml`, `deploy/Caddyfile` | What runs on the VM: the app and HTTPS |
 | `Dockerfile` | The app's image; jobs and files on the `/data` volume |

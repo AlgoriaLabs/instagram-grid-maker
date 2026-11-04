@@ -68,6 +68,8 @@ const landing = JSON.stringify({
   name: "Instagram Grid Maker",
   manifest: provider.manifestUrl,
   standard: "https://github.com/AlgoriaLabs/stellar-agent-services",
+  // The deployed git commit, set by deploy/ship.sh: deploys wait until it shows here.
+  revision: process.env.APP_REVISION || "unknown",
 });
 
 // The kit's server, with the job files and a small landing answer in front of the provider's own routes.

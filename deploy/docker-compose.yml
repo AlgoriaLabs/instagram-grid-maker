@@ -1,5 +1,6 @@
 # What runs on the VM: the service, and Caddy in front of it for HTTPS (a free Let's Encrypt certificate, renewed by
-# itself). deploy.sh copies the project here and runs `docker compose up -d --build`.
+# itself). deploy/ship.sh (from ./deploy.sh or GitHub Actions) copies the project here and runs
+# `docker compose up -d --build`.
 #
 # app.env holds the service's settings, written by deploy.sh (PAY_TO, AGENT_ID, PUBLIC_ORIGIN, the facilitator key).
 # site.env holds only SITE_ADDRESS, so Caddy never sees the facilitator key.
@@ -16,6 +17,7 @@ services:
       PORT: "8787"
       JOB_DB_PATH: /data/jobs.sqlite
       OUTPUT_DIR: /data/outputs
+      APP_REVISION: ${APP_REVISION:-unknown}
     volumes:
       - jobs:/data
     expose:

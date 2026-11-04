@@ -156,9 +156,9 @@ resource "oci_core_instance" "app" {
     user_data           = base64encode(file("${path.module}/cloud-init.yaml"))
   }
 
-  # A newer image or edited cloud-init must not replace the VM: its public IP, and with it the registered HTTPS
-  # address, would change.
+  # A newer image, edited cloud-init or another availability domain (deploy.sh tries them in turn when one is full)
+  # must not replace the VM: its public IP, and with it the registered HTTPS address, would change.
   lifecycle {
-    ignore_changes = [source_details, metadata]
+    ignore_changes = [source_details, metadata, availability_domain]
   }
 }
