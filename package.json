@@ -1,0 +1,34 @@
+{
+  "name": "instagram-grid-maker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Instagram grid maker: splits one image into a 3 or 6 tile Instagram profile grid (carousel/puzzle feed), sized 1080x1350 portrait or 1080x1080 square, with a posting guide.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && provider-kit dev -- node --disable-warning=ExperimentalWarning dist/server.js",
+    "check": "provider-kit check --manifest http://localhost:8787/.well-known/stellar-agent-services.json --dev",
+    "status": "./deploy.sh status",
+    "launch": "tsc && provider-kit launch --start \"node --env-file-if-exists=.env --disable-warning=ExperimentalWarning dist/server.js\"",
+    "deploy": "./deploy.sh",
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning dist/server.js",
+    "test": "tsc && node --test 'dist/**/*.test.js'"
+  },
+  "dependencies": {
+    "@stellar-agent-services/provider-kit": "0.1.0",
+    "fflate": "0.8.3",
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
+  },
+  "overrides": {
+    "@trionlabs/stellar8004": {
+      "@stellar/stellar-sdk": "16.4.1"
+    }
+  }
+}

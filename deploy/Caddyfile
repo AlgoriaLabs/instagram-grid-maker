@@ -1,0 +1,18 @@
+# HTTPS for the service. SITE_ADDRESS is its hostname, such as 152-67-1-2.sslip.io: Caddy gets the certificate itself.
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# The standard allows request bodies up to 10 MiB [§3.1]; the kit enforces the exact limit.
+	request_body {
+		max_size 11MB
+	}
+
+	reverse_proxy app:8787 {
+		# Paid create-job requests may be held up to 30 s [J9].
+		transport http {
+			read_timeout 60s
+			write_timeout 60s
+		}
+	}
+}

@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+jobs.sqlite*
+dist/
+outputs/
+deploy/.secrets/
+deploy/app.env
+deploy/site.env
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate*
+deploy/terraform/terraform.tfvars

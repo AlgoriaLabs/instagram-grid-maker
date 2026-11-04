@@ -1,0 +1,49 @@
+# What runs on the VM: the service, and Caddy in front of it for HTTPS (a free Let's Encrypt certificate, renewed by
+# itself). deploy.sh copies the project here and runs `docker compose up -d --build`.
+#
+# app.env holds the service's settings, written by deploy.sh (PAY_TO, AGENT_ID, PUBLIC_ORIGIN, the facilitator key).
+# site.env holds only SITE_ADDRESS, so Caddy never sees the facilitator key.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: instagram-grid-maker:latest
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      PORT: "8787"
+      JOB_DB_PATH: /data/jobs.sqlite
+      OUTPUT_DIR: /data/outputs
+    volumes:
+      - jobs:/data
+    expose:
+      - "8787"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    env_file: site.env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  # Paid jobs (SQLite) and their files. Keep it: clients recover results from it.
+  jobs:
+  caddy_data:
+  caddy_config:
